@@ -278,6 +278,63 @@ tiles.forEach(t=>{
   });
 });
 
+function drawConnectors(){
+  connectorsSvg.innerHTML = '';
+  connectorsSvg.setAttribute('width', window.innerWidth);
+  connectorsSvg.setAttribute('height', window.innerHeight);
+  connectorsSvg.style.left = '0px';
+  connectorsSvg.style.top = '0px';
+  const svgNS = 'http://www.w3.org/2000/svg';
+
+  relations.forEach(rel => {
+    const a = tileById[rel.a], b = tileById[rel.b];
+    if(!a || !b) return;
+    const dx = b._px - a._px;
+    const dy = b._py - a._py;
+    const dist = Math.hypot(dx,dy);
+    if(dist < 1) return;
+
+    const dashLen = Math.min(HEX_SIZE*0.9, dist*0.5);
+    const midx = (a._px + b._px)/2;
+    const midy = (a._py + b._py)/2;
+    const angle = Math.atan2(dy,dx);
+
+    const w = rel.strength * 3 + 2;
+    const h = dashLen;
+    const rx = h/2, ry = w/2;
+    const path = document.createElementNS(svgNS, 'rect');
+    path.setAttribute('x', -rx);
+    path.setAttribute('y', -ry);
+    path.setAttribute('width', h);
+    path.setAttribute('height', w);
+    path.setAttribute('rx', Math.max(2, ry));
+    path.setAttribute('ry', Math.max(2, ry));
+    path.setAttribute('fill', (a.color === 'red' && b.color === 'red') ? 'var(--stroke-red)' : (a.color === 'blue' && b.color === 'blue') ? 'var(--stroke-blue)' : '#b3b3b3');
+    path.setAttribute('opacity', 0.95);
+    const deg = angle * 180/Math.PI;
+    path.setAttribute('transform', `translate(${midx},${midy}) rotate(${deg})`);
+    connectorsSvg.appendChild(path);
+
+    const tickLen = Math.max(6, HEX_SIZE*0.12);
+    for(let i=0;i<2;i++){
+      const tick = document.createElementNS(svgNS,'rect');
+      const tW = Math.max(1.5, rel.strength);
+      const tH = tickLen;
+      const offset = (i===0) ? - (w + tH*0.4) : (w + tH*0.4);
+      tick.setAttribute('x', -tW/2);
+      tick.setAttribute('y', -tH/2);
+      tick.setAttribute('width', tW);
+      tick.setAttribute('height', tH);
+      tick.setAttribute('rx', 1);
+      tick.setAttribute('fill', 'rgba(0,0,0,0.12)');
+      tick.setAttribute('transform', `translate(${midx + Math.cos(angle)*offset},${midy + Math.sin(angle)*offset}) rotate(${deg+90})`);
+      connectorsSvg.appendChild(tick);
+    }
+  });
+}
+
+drawConnectors();
+
 const viewport = document.getElementById('viewport');
 let scale = 1;
 let originX = 0, originY = 0;

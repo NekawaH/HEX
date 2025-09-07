@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Hex Tile Map — draggable, zoomable, flippable</title>
+<style>
+  :root{
+    --bg: #f7f7fb;
+    --tile-fill: #ffffff;
+    --stroke-blue: #2b8cf0;
+    --stroke-red: #ef5b5b;
+    --shadow: 0 6px 18px rgba(22,25,35,0.08);
+    --font: "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  html,body { height:100%; margin:0; background:var(--bg); font-family:var(--font); -webkit-font-smoothing:antialiased;}
+  .stage-wrap {
+    width:100%; height:100vh; overflow:hidden; position:relative;
+    touch-action: none;
+    display:flex; align-items:center; justify-content:center;
+  }
+
+  .viewport {
+    transform-origin: 0 0;
+    will-change: transform;
+    position:absolute;
+    left:0; top:0;
+  }
+
+  .map {
+    position:relative;
+    transform: translate(0,0);
+  }
+
+  .tile {
+    position:absolute;
+    width: calc(var(--hex-size)*2);
+    height: calc(var(--hex-size)*1.73205);
+    display:block;
+    transform-style: preserve-3d;
+    perspective: 900px;
+    cursor:pointer;
+    user-select:none;
+  }
+
+  .flip {
+    width:100%; height:100%;
+    transition: transform 420ms cubic-bezier(.2,.9,.2,1);
+    transform-style: preserve-3d;
+    will-change: transform;
+  }
+  .tile.flipped .flip { transform: rotateY(180deg); }
+
+  .face {
+    position:absolute; inset:0;
+    display:flex; align-items:center; justify-content:center;
+    padding:14px;
+    box-sizing:border-box;
+    -webkit-clip-path: polygon(
+      25% 0%, 75% 0%, 100% 50%,
+      75% 100%, 25% 100%, 0% 50%
+    );
+    clip-path: polygon(
+      25% 0%, 75% 0%, 100% 50%,
+      75% 100%, 25% 100%, 0% 50%
+    );
+    backface-visibility: hidden;
+    background: var(--tile-fill);
+    box-shadow: var(--shadow);
+    border-radius: 10px;
+  }
+
+  .face.front { transform: rotateY(0deg); }
+  .face.back { transform: rotateY(180deg); }
+
+  .tile .content {
+    text-align:center;
+    font-size:14px;
+    line-height:1.15;
+    color:#145;
+  }
+  .title {
+    font-weight:600; font-size:15px; letter-spacing:0.2px;
+  }
+  .desc {
+    font-weight:400; font-size:13px; color:#577;
+  }
+
+  .border-svg {
+    position:absolute; inset:0;
+    pointer-events:none;
+  }
+
+  .stripe {
+    position:absolute; left:0; right:0; height:8px;
+    top:0;
+    -webkit-clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+    clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+    transform: translateY(-4px);
+    border-radius:6px;
+    opacity:0.75;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  }
+  svg.connectors { position:absolute; left:0; top:0; pointer-events:none; overflow:visible; }
+
+  .ui {
+    position:fixed; right:12px; top:12px; background:rgba(255,255,255,0.9);
+    border-radius:10px; padding:8px 12px; box-shadow:var(--shadow);
+    font-size:13px; color:#1b2;
+  }
+  .ui .hint { color:#356; font-weight:600; }
+
+  @media (max-width:720px){
+    .ui{ display:none; }
+    .title{ font-size:13px;}
+  }
+</style>
+</head>
+<body>
+
+<div class="stage-wrap" id="stage">
+  <div class="viewport" id="viewport">
+    <div class="map" id="map">
+    </div>
+    <svg class="connectors" id="connectors"></svg>
+  </div>
+</div>
+
+<div class="ui">
+  <div class="hint">Pan: drag • Zoom: wheel • Flip: left-click tile</div>
+  <div style="margin-top:6px; font-size:12px; color:#567">Strength = connector width (1–3)</div>
+</div>
+
+<script>
+
+const HEX_SIZE = 128;
+const WIDTH = HEX_SIZE * 2;
+const HEIGHT = Math.sqrt(3) * HEX_SIZE;
+const TILE_W = WIDTH;
+const TILE_H = HEIGHT;
+
+function axialToPixel(q, r, size=HEX_SIZE){
+  const x = size * 3/2 * r;
+  const y = size * Math.sqrt(3) * (q + r/2);
+  return {x, y};
+}
+
+const tiles = [
+  { id: 'mil', q: 0, r: 0, title: 'Militarism', desc: 'Military dominance in politics, backed by assassinations and coups, directly drove invasions of Manchuria (1931) and the rest of China (1937). The single most decisive cause of expansion.', color:'red' },
+  { id: 'ultra', q: 1, r: 0, title: 'Ultranationalism', desc: 'Provided ideological justification for conquest: belief in Japan’s racial superiority and mission to lead Asia. This fed into public support and political culture that enabled expansion.', color:'red' },
+  { id: 'foreign', q: 0, r: 1, title: 'Foreign policy, empire', desc: 'Japanese foreign policy in the 1930s became openly expansionist, aiming to secure resources and regional dominance. This was the outward expression of militarism and ultranationalism.', color:'red' },
+  { id: 'econ', q: -1, r: 1, title: 'Economic modernization', desc: 'Industrial and military modernization allowed Japan to sustain war, but dependence on raw materials (oil, iron, rubber) created urgent pressures for expansion into Manchuria, China, and Southeast Asia.', color:'red' },
+  { id: 'stab', q: 0, r: -1, title: 'Political instability', desc: 'Civilian cabinets failed to control the military, with corruption, assassinations, and weak party politics eroding democracy. This opened the door for militarism to dominate.', color:'red' },
+  { id: 'edu', q: 1, r: -1, title: 'Education Reform', desc: 'By instilling loyalty and nationalism, education shaped the mindset of citizens and soldiers, making the population receptive to ultranationalism and militarism. Still, it was more a supporting factor than a driving cause.', color:'blue' },
+  { id: 'divine', q: -1, r: 0, title: 'Divine emperor', desc: 'The emperor’s sacred status legitimized militarist actions. However, he was more a symbolic figure than an active driver. The idea of divine authority was exploited, but not decisive on its own.', color:'blue' },
+  { id: 'privy', q: -1, r: -1, title: 'Privy council', desc: 'The constitutional system concentrated power in unelected elites and military ministers, preventing effective parliamentary resistance to militarism. Facilitated expansion but was structural rather than a driving force.', color:'blue' },
+  { id: 'meiji', q: -2, r: 1, title: 'Meiji Restoration', desc: 'The Meiji Restoration modernized Japan, abolished feudalism, and centralized power under the emperor. While it laid the foundation for later strength, by the 1930s–40s it was more of a historical backdrop than a direct cause of expansion.', color:'blue' },
+];
+
+const relations = [
+  {a:'meiji', b:'econ', strength:1},
+  {a:'meiji', b:'divine', strength:1},
+  {a:'ultra', b:'foreign', strength:2},
+  {a:'econ', b:'mil', strength:2},
+  {a:'edu', b:'mil', strength:2},
+
+  {a:'mil', b:'ultra', strength:3},
+  {a:'mil', b:'stab', strength:3},
+  {a:'econ', b:'foreign', strength:3},
+  {a:'edu', b:'ultra', strength:3},
+  {a:'divine', b:'mil', strength:3},
+  {a:'stab', b:'privy', strength:3},
+  {a:'mil', b:'foreign', strength:3},
+];
+
+const mapEl = document.getElementById('map');
+const connectorsSvg = document.getElementById('connectors');
+
+mapEl.style.setProperty('--hex-size', HEX_SIZE + 'px');
+
+const tileById = {};
+tiles.forEach(tile => {
+  let pos;
+  if (tile.x !== undefined && tile.y !== undefined){
+    pos = { x: tile.x, y: tile.y };
+  } else {
+    pos = axialToPixel(tile.q || 0, tile.r || 0, HEX_SIZE);
+  }
+  tile._cx = pos.x;
+  tile._cy = pos.y;
+  tileById[tile.id] = tile;
+});
+
+(function layoutTiles(){
+  let minx=Infinity, maxx=-Infinity, miny=Infinity, maxy=-Infinity;
+  tiles.forEach(t=>{
+    const x = t._cx, y = t._cy;
+    minx = Math.min(minx, x); maxx = Math.max(maxx, x);
+    miny = Math.min(miny, y); maxy = Math.max(maxy, y);
+  });
+  const pad = HEX_SIZE*2;
+  minx -= pad; maxx += pad; miny -= pad; maxy += pad;
+  const offsetX = -minx + window.innerWidth*0.5 - (maxx-minx)/2;
+  const offsetY = -miny + window.innerHeight*0.5 - (maxy-miny)/2;
+
+  tiles.forEach(t=>{
+    t._px = Math.round(t._cx + offsetX);
+    t._py = Math.round(t._cy + offsetY);
+  });
+})();
+
+function hexPoints(size){
+  const pts=[];
+  for(let i=0;i<6;i++){
+    const angle_deg = 60 * i
+    const angle = Math.PI/180 * angle_deg;
+    pts.push(`${Math.cos(angle)*size},${Math.sin(angle)*size}`);
+  }
+  return pts.join(' ');
+}
+
+tiles.forEach(t=>{
+  const tileWrap = document.createElement('div');
+  tileWrap.className = 'tile';
+  tileWrap.style.width = TILE_W + 'px';
+  tileWrap.style.height = TILE_H + 'px';
+  tileWrap.style.left = (t._px - TILE_W/2) + 'px';
+  tileWrap.style.top  = (t._py - TILE_H/2) + 'px';
+  tileWrap.dataset.id = t.id;
+
+  const flip = document.createElement('div');
+  flip.className = 'flip';
+
+  const front = document.createElement('div');
+  front.className = 'face front';
+  const stripe = document.createElement('div');
+  stripe.className = 'stripe';
+  stripe.style.background = (t.color === 'red') ? 'linear-gradient(90deg,var(--stroke-red), #f08a8a)' : 'linear-gradient(90deg,var(--stroke-blue), #8fbff8)';
+  front.appendChild(stripe);
+  const frontContent = document.createElement('div');
+  frontContent.className = 'content';
+  frontContent.innerHTML = `<div class="title">${t.title}</div>`;
+  front.appendChild(frontContent);
+
+  const back = document.createElement('div');
+  back.className = 'face back';
+  const backContent = document.createElement('div');
+  backContent.className = 'content';
+  backContent.innerHTML = `<div class="desc">${t.desc}</div>`;
+  back.appendChild(backContent);
+
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('class', 'border-svg');
+  svg.setAttribute('width', TILE_W);
+  svg.setAttribute('height', TILE_H);
+  svg.setAttribute('viewBox', `${-TILE_W/2} ${-TILE_H/2} ${TILE_W} ${TILE_H}`);
+  const poly = document.createElementNS(svgNS, 'polygon');
+  poly.setAttribute('points', hexPoints(HEX_SIZE));
+  poly.setAttribute('fill', 'none');
+  poly.setAttribute('stroke-width', '4');
+  poly.setAttribute('stroke-linejoin', 'round');
+  poly.setAttribute('stroke', t.color === 'red' ? 'var(--stroke-red)' : 'var(--stroke-blue)');
+  poly.setAttribute('vector-effect','non-scaling-stroke');
+  svg.appendChild(poly);
+
+  flip.appendChild(front);
+  flip.appendChild(back);
+  tileWrap.appendChild(flip);
+  tileWrap.appendChild(svg);
+  mapEl.appendChild(tileWrap);
+
+  t._el = tileWrap;
+
+  tileWrap.addEventListener('click', (e)=>{
+    if(e.button !== 0) return;
+    tileWrap.classList.toggle('flipped');
+  });
+});
+
+const viewport = document.getElementById('viewport');
+let scale = 1;
+let originX = 0, originY = 0;
+let isPanning = false;
+let panStart = null;
+
+function setTransform(){
+  viewport.style.transform = `translate(${originX}px, ${originY}px) scale(${scale})`;
+}
+
+const stage = document.getElementById('stage');
+stage.addEventListener('pointerdown', (e)=>{
+  if(e.target.closest('.tile')) {
+    if(e.button === 1 || e.ctrlKey || e.metaKey) {
+      isPanning = true;
+      panStart = {x: e.clientX - originX, y: e.clientY - originY};
+      stage.setPointerCapture(e.pointerId);
+    }
+  } else {
+    isPanning = true;
+    panStart = {x: e.clientX - originX, y: e.clientY - originY};
+    stage.setPointerCapture(e.pointerId);
+  }
+});
+
+stage.addEventListener('pointermove', (e)=>{
+  if(!isPanning) return;
+  originX = e.clientX - panStart.x;
+  originY = e.clientY - panStart.y;
+  setTransform();
+});
+
+stage.addEventListener('pointerup', (e)=>{
+  if(isPanning) {
+    isPanning = false;
+    stage.releasePointerCapture(e.pointerId);
+  }
+});
+
+stage.addEventListener('pointercancel', (e)=>{
+  isPanning = false;
+  try{ stage.releasePointerCapture(e.pointerId);}catch(e){}
+});
+
+stage.addEventListener('wheel', (ev)=>{
+  ev.preventDefault();
+  const delta = -ev.deltaY;
+  const zoomFactor = Math.exp(delta * 0.0012);
+  const newScale = Math.max(0.25, Math.min(3.5, scale * zoomFactor));
+  const rect = viewport.getBoundingClientRect();
+  const mouseX = ev.clientX;
+  const mouseY = ev.clientY;
+  const wx = (mouseX - originX) / scale;
+  const wy = (mouseY - originY) / scale;
+  scale = newScale;
+  originX = mouseX - wx * scale;
+  originY = mouseY - wy * scale;
+  setTransform();
+}, {passive:false});
+
+window.addEventListener('resize', ()=>{
+  drawConnectors();
+});
+
+</script>
+</body>
+</html>
